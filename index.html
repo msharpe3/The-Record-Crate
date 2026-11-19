@@ -461,13 +461,15 @@ details.how summary{cursor:pointer;color:var(--brick);font-family:'Courier Prime
         </ol>
       </details>
 
-      <h3 style="margin-top:14px">Discogs token <span class="small">(optional, better vinyl search)</span></h3>
+      <h3 style="margin-top:14px">Discogs <span class="small">(collection import + exact pressings)</span></h3>
+      <div class="keyrow"><input class="input" id="key-discogsuser" placeholder="Discogs username" autocomplete="off" autocapitalize="off"></div>
+      <div style="height:6px"></div>
       <div class="keyrow"><input class="input" id="key-discogs" placeholder="Paste Discogs personal token" autocomplete="off"></div>
       <details class="how"><summary>How to get it</summary>
         <ol class="steps">
-          <li>Log in at <a href="https://www.discogs.com/settings/developers" target="_blank" rel="noopener">discogs.com/settings/developers</a> (free account).</li>
-          <li>Tap <b>Generate new token</b>, copy it, paste it here.</li>
-          <li>Without it, record search uses Apple's album catalog instead.</li>
+          <li>Your username is in the top-right of discogs.com when you're logged in (or in your profile link: discogs.com/user/<b>username</b>).</li>
+          <li>For the token, go to <a href="https://www.discogs.com/settings/developers" target="_blank" rel="noopener">discogs.com/settings/developers</a>, tap <b>Generate new token</b>, copy it, paste it here.</li>
+          <li>Without a token, record search uses Apple's album catalog instead.</li>
         </ol>
       </details>
 
@@ -482,6 +484,29 @@ details.how summary{cursor:pointer;color:var(--brick);font-family:'Courier Prime
       </details>
       <div style="height:12px"></div>
       <button class="btn block" id="saveKeys">Save Keys</button>
+    </div>
+
+    <div class="panel">
+      <h2>Import from Discogs</h2>
+      <p>Pulls every record in your Discogs collection into the crates: covers, year, label, genre, and media/sleeve condition. Records already in your crates are skipped, so it's safe to run again after you add more on Discogs.</p>
+      <button class="btn block" id="discogsImport">Import My Collection</button>
+      <div class="small" id="discogsStatus" style="margin-top:8px"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Sync Devices</h2>
+      <p>Uses the same Firebase database as The Archive, so your records, mixtapes and keys show up on your phone and computer.</p>
+      <h3>Step 1 — connect the database</h3>
+      <p>Paste the same Firebase config you use in The Archive. Do this once on each device. (In The Archive, open <b>Sync Devices</b>, and the config is in the step 1 box. Copy it from there.)</p>
+      <textarea class="input" id="fbConfig" rows="4" style="font-size:12px;font-family:'Courier Prime',monospace" placeholder='{"apiKey": "...", "authDomain": "...", "projectId": "...", ...}'></textarea>
+      <div style="height:8px"></div>
+      <button class="btn alt block" id="fbSave">Save Database Connection</button>
+      <h3 style="margin-top:14px">Step 2 — sync code</h3>
+      <p>Create a code on one device, then type the same code on the other one. It's separate from your Archive household code.</p>
+      <div class="keyrow"><input class="input" id="syncCode" placeholder="No code yet" autocomplete="off" autocapitalize="off"><button class="btn alt sm" id="syncCopy">Copy</button></div>
+      <div style="height:8px"></div>
+      <div class="row"><button class="btn" id="syncNew">Create Code</button><button class="btn alt" id="syncJoin">Use This Code</button></div>
+      <div class="small" id="syncStatus" style="margin-top:10px"></div>
     </div>
 
     <div class="panel">
@@ -537,9 +562,12 @@ function load(){
   return {records:[], playlists:[], keys:{}};
 }
 function save(){
+  state.updatedAt = Date.now();
   try{ localStorage.setItem(KEY, JSON.stringify(state)); }
   catch(e){ toast('Storage full — try smaller cover photos or export a backup'); }
+  queuePush();
 }
+function saveLocalOnly(){ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} }
 function loadCache(){ try{ return JSON.parse(localStorage.getItem(CACHE_KEY))||{} }catch(e){ return {} } }
 function saveCache(){ try{ localStorage.setItem(CACHE_KEY, JSON.stringify(itunesCache)); }catch(e){ itunesCache={}; } }
 
@@ -862,7 +890,10 @@ function openAdd(){
     <div class="small">Searching ${src}${state.keys.discogs?'':' · add a Discogs token in the Back Room for exact pressings'}</div>
     <ul class="results" id="addRes"></ul>
     <div style="height:8px"></div>
-    <button class="btn ghost block" id="addManual">Enter It Manually</button>`);
+    <button class="btn ghost block" id="addManual">Enter It Manually</button>
+    <div style="height:8px"></div>
+    <button class="btn ghost block" id="addDiscogs">Import Whole Discogs Collection</button>`);
+  $('#addDiscogs').onclick=()=>{ closeSheet(); switchView('settings'); setTimeout(()=>$('#discogsImport').scrollIntoView({behavior:'smooth',block:'center'}),100); };
   const go = ()=>searchRecords($('#addQ').value.trim());
   $('#addGo').onclick=go;
   $('#addQ').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); go(); $('#addQ').blur(); } });
@@ -1291,6 +1322,10 @@ function openCoverPicker(p){
 function renderSettings(){
   $('#key-lastfm').value = state.keys.lastfm||'';
   $('#key-discogs').value = state.keys.discogs||'';
+  $('#key-discogsuser').value = state.keys.discogsUser||'';
+  const cfg = getFbConfig(); $('#fbConfig').value = cfg ? JSON.stringify(cfg,null,1) : '';
+  $('#syncCode').value = getSyncCode();
+  refreshSyncStatus();
   $('#key-unsplash').value = state.keys.unsplash||'';
   const tracks = state.playlists.reduce((n,p)=>n+p.tracks.length,0);
   $('#statsLine').textContent = `${state.records.length} records · ${state.playlists.length} mixtapes · ${tracks} tracks`;
@@ -1298,6 +1333,7 @@ function renderSettings(){
 $('#saveKeys').onclick=()=>{
   state.keys.lastfm = $('#key-lastfm').value.trim();
   state.keys.discogs = $('#key-discogs').value.trim();
+  state.keys.discogsUser = $('#key-discogsuser').value.trim().replace(/^.*discogs\.com\/(user\/)?/i,'').replace(/\/.*$/,'');
   state.keys.unsplash = $('#key-unsplash').value.trim();
   save(); toast('Keys saved');
 };
@@ -1320,6 +1356,196 @@ $('#wipeBtn').onclick=async()=>{
     state={records:[],playlists:[],keys:state.keys}; save(); renderSettings(); renderCrates(); toast('Crates emptied');
   }
 };
+
+
+/* =========================================================
+   DISCOGS COLLECTION IMPORT
+   ========================================================= */
+function cleanArtist(a){ return String(a||'').replace(/\s*\(\d+\)$/,'').replace(/\*$/,'').trim(); }
+function discogsCond(notes, fieldId){
+  const n = (notes||[]).find(x=>x.field_id===fieldId); if(!n) return '';
+  const m = String(n.value).match(/\((M|NM|VG\+|VG|G\+|G|F|P)\)/); if(m) return m[1];
+  const map={'Mint':'M','Near Mint':'NM','Very Good Plus':'VG+','Very Good':'VG','Good Plus':'G+','Good':'G','Fair':'F','Poor':'P'};
+  for(const k in map) if(String(n.value).startsWith(k)) return map[k];
+  return '';
+}
+$('#discogsImport').onclick = async ()=>{
+  const st = $('#discogsStatus'), btn = $('#discogsImport');
+  // pick up anything typed but not saved yet
+  const u = ($('#key-discogsuser').value.trim()||state.keys.discogsUser||'').replace(/^.*discogs\.com\/(user\/)?/i,'').replace(/\/.*$/,'');
+  const tok = $('#key-discogs').value.trim()||state.keys.discogs||'';
+  if(!u){ st.innerHTML='Type your Discogs username in the box above first.'; $('#key-discogsuser').focus(); return; }
+  state.keys.discogsUser=u; if(tok) state.keys.discogs=tok; save();
+  btn.disabled=true;
+  const byId = new Map(state.records.filter(r=>r.src==='discogs'&&r.srcId).map(r=>[String(r.srcId),r]));
+  const byName = new Map(state.records.map(r=>[norm(r.artist)+'|'+norm(r.title),r]));
+  let page=1, pages=1, added=0, skipped=0, total=0;
+  try{
+    do{
+      st.innerHTML = `<span class="spinner"></span>Pulling page ${page}${pages>1?' of '+pages:''} from Discogs…`;
+      const url = `https://api.discogs.com/users/${encodeURIComponent(u)}/collection/folders/0/releases?per_page=100&page=${page}&sort=artist`+(tok?`&token=${encodeURIComponent(tok)}`:'');
+      const r = await fetch(url);
+      if(r.status===401||r.status===403) throw new Error(tok?"Discogs says that token can't see this collection. Double-check the username and token.":"That collection is private. Add your Discogs token above and try again.");
+      if(r.status===404) throw new Error(`Couldn't find a Discogs user named "${u}".`);
+      if(r.status===429){ st.innerHTML='<span class="spinner"></span>Discogs asked us to slow down. Waiting a minute…'; await sleep(61000); continue; }
+      if(!r.ok) throw new Error('Discogs error '+r.status);
+      const d = await r.json();
+      pages = (d.pagination&&d.pagination.pages)||1; total=(d.pagination&&d.pagination.items)||total;
+      for(const it of (d.releases||[])){
+        const b = it.basic_information||{};
+        const artist = cleanArtist((b.artists||[]).map(a=>a.anv||a.name)[0]||'Unknown Artist');
+        const title = b.title||'Untitled';
+        const key = norm(artist)+'|'+norm(title);
+        const existing = byId.get(String(b.id)) || byName.get(key);
+        const cover = (b.cover_image && !/spacer\.gif/.test(b.cover_image)) ? b.cover_image : '';
+        if(existing){
+          if(!existing.cover && cover) existing.cover = cover;
+          skipped++; continue;
+        }
+        const fmt = (b.formats||[])[0]||{};
+        const rec = { id:uid(), added:Date.now(), src:'discogs', srcId:b.id, artist, title,
+          year: b.year?String(b.year):'', label:((b.labels||[])[0]||{}).name||'',
+          genre:(b.genres||[])[0]||'Misc', styles:(b.styles||[]).join(', '),
+          format:[fmt.name,...(fmt.descriptions||[])].filter(Boolean).join(', '),
+          condition: discogsCond(it.notes,1)||'', sleeve: discogsCond(it.notes,2)||'',
+          notes:'', cover };
+        state.records.push(rec); byId.set(String(b.id),rec); byName.set(key,rec); added++;
+      }
+      page++;
+      if(page<=pages) await sleep(1100); // Discogs allows ~60 requests/minute
+    } while(page<=pages);
+    save(); renderSettings(); ui.mode='shelf'; renderCrates();
+    st.innerHTML = `<span class="ok">Done.</span> Added ${added} record${added===1?'':'s'}${skipped?`, skipped ${skipped} already in your crates`:''}.`;
+    toast(added ? `${added} records filed in the crates` : 'Crates already match your Discogs collection');
+  }catch(e){
+    if(added){ save(); renderCrates(); }
+    st.innerHTML = `<span style="color:var(--brick)">${esc(e.message==='Failed to fetch'?"Couldn't reach Discogs. Check your connection and try again.":e.message)}</span>${added?` (${added} added before it stopped)`:''}`;
+  }finally{ btn.disabled=false; }
+};
+
+/* =========================================================
+   CLOUD SYNC — Firebase Firestore, same project as The Archive
+   ========================================================= */
+const FB_CFG_KEY='recordcrate.firebase.v1', SYNC_CODE_KEY='recordcrate.synccode.v1';
+const SYNC_KEYS=['lastfm','discogs','discogsUser','unsplash'];
+let fbDb=null, fbUnsub=null, pushTimer=null, applyingRemote=false, syncState='off', firstSnap=true;
+function getFbConfig(){ try{ return JSON.parse(localStorage.getItem(FB_CFG_KEY)||'null'); }catch(e){ return null; } }
+function getSyncCode(){ return localStorage.getItem(SYNC_CODE_KEY)||''; }
+function docRef(){ return fbDb.collection('households').doc('recordcrate-'+getSyncCode()); }
+
+function loadScript(src){ return new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=()=>rej(new Error('load')); document.head.appendChild(s); }); }
+async function initFirebase(){
+  const cfg = getFbConfig(); if(!cfg) return false;
+  try{
+    if(!window.firebase){
+      await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js');
+      await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js');
+    }
+    const app = firebase.apps.length ? firebase.apps[0] : firebase.initializeApp(cfg);
+    fbDb = firebase.firestore(app);
+    return true;
+  }catch(e){ fbDb=null; setSync('error','Couldn\'t load the database. Check the config.'); return false; }
+}
+function cloudPayload(){
+  const keys={}; SYNC_KEYS.forEach(k=>{ if(state.keys[k]) keys[k]=state.keys[k]; });
+  let payload = { app:'The Record Crate', records:state.records, playlists:state.playlists, keys, updatedAt:state.updatedAt||Date.now() };
+  // Firestore docs max out at 1 MB: leave uploaded photos on this device if they'd push it over
+  let json = JSON.stringify(payload);
+  if(json.length > 900000){
+    payload = JSON.parse(json);
+    payload.records.forEach(r=>{ if(String(r.cover).startsWith('data:')) r.cover=''; });
+    payload.playlists.forEach(p=>{ if(p.cover&&p.cover.type==='upload') p.cover={type:'collage'}; });
+    payload.trimmed = true;
+  }
+  return JSON.parse(JSON.stringify(payload)); // strips undefined values Firestore rejects
+}
+function queuePush(){
+  if(applyingRemote || !fbDb || !getSyncCode()) return;
+  clearTimeout(pushTimer);
+  setSync('saving','Saving to the cloud…');
+  pushTimer = setTimeout(async()=>{
+    try{
+      const p = cloudPayload();
+      await docRef().set(p);
+      setSync('on', p.trimmed?'Synced. (Uploaded photos are too big to sync and stay on this device.)':'Synced.');
+    }catch(e){ setSync('error', 'Saved on this device. The cloud sync failed ('+esc(e.code||e.message)+').'); }
+  }, 800);
+}
+function mergeById(local, remote){
+  const m = new Map(); (remote||[]).forEach(x=>m.set(x.id,x)); (local||[]).forEach(x=>{ if(!m.has(x.id)) m.set(x.id,x); });
+  return [...m.values()];
+}
+function attachSync(merge){
+  if(fbUnsub){ fbUnsub(); fbUnsub=null; }
+  if(!fbDb || !getSyncCode()) return;
+  firstSnap = true;
+  setSync('saving','Connecting…');
+  fbUnsub = docRef().onSnapshot(doc=>{
+    if(doc.metadata.hasPendingWrites) return;           // our own write echoing back
+    const d = doc.exists ? doc.data() : null;
+    if(!d){ if(firstSnap){ firstSnap=false; queuePush(); } return; }
+    applyingRemote = true;
+    if(firstSnap && merge){
+      state.records = mergeById(state.records, d.records);
+      state.playlists = mergeById(state.playlists, d.playlists);
+    } else {
+      state.records = Array.isArray(d.records)?d.records:[];
+      state.playlists = Array.isArray(d.playlists)?d.playlists:[];
+    }
+    Object.assign(state.keys, d.keys||{});
+    state.updatedAt = d.updatedAt||Date.now();
+    saveLocalOnly();
+    applyingRemote = false;
+    const wasFirst = firstSnap; firstSnap=false;
+    if(wasFirst && merge) queuePush(); else setSync('on','Synced.');
+    if($('#view-settings').classList.contains('active')) renderSettings();
+    if($('#view-crates').classList.contains('active') && !$('#overlay').classList.contains('show')) renderCrates();
+  }, err=>{
+    setSync('error', err.code==='permission-denied'
+      ? 'The database said no (permission denied). Your Firestore rules may only allow The Archive. See the note below.'
+      : 'Lost the cloud connection. Showing the copy on this device.');
+  });
+}
+function setSync(kind,msg){ syncState=kind; refreshSyncStatus(msg); }
+let lastSyncMsg='';
+function refreshSyncStatus(msg){
+  if(msg) lastSyncMsg=msg;
+  const el=$('#syncStatus'); if(!el) return;
+  if(!getFbConfig()) el.innerHTML='Not connected. Your data lives on this device only.';
+  else if(!getSyncCode()) el.innerHTML='Database connected. Now create a code, or enter the one from your other device.';
+  else el.innerHTML=`<span class="${syncState==='error'?'':'ok'}" style="${syncState==='error'?'color:var(--brick)':''}">${esc(lastSyncMsg||'Synced.')}</span>`
+    + (syncState==='error'&&/permission/.test(lastSyncMsg)?`<br>Fix: in the Firebase console go to Firestore → Rules and make sure the rule for <b>households</b> allows read/write on any document, the same way The Archive's does.`:'');
+}
+function parseCfg(raw){
+  let t=raw.trim().replace(/^[\s\S]*?(\{)/,'$1').replace(/;\s*$/,'');
+  t=t.slice(0,t.lastIndexOf('}')+1);
+  try{ return JSON.parse(t); }catch(e){}
+  // handle a JS object literal (unquoted keys, trailing commas) without eval
+  const j=t.replace(/([{,]\s*)([A-Za-z_][\w]*)\s*:/g,'$1"$2":').replace(/'/g,'"').replace(/,\s*([}\]])/g,'$1');
+  return JSON.parse(j);
+}
+$('#fbSave').onclick = async ()=>{
+  try{
+    const cfg=parseCfg($('#fbConfig').value);
+    if(!cfg||!cfg.projectId||!cfg.apiKey) throw new Error('missing');
+    localStorage.setItem(FB_CFG_KEY, JSON.stringify(cfg));
+    if(await initFirebase()){ toast('Database connected'); if(getSyncCode()) attachSync(true); }
+    refreshSyncStatus();
+  }catch(e){ toast("That doesn't look like a Firebase config. Copy the whole thing from The Archive."); }
+};
+$('#syncNew').onclick = async ()=>{
+  if(!fbDb){ toast('Connect the database first (step 1)'); return; }
+  const code=(crypto.randomUUID?crypto.randomUUID():uid()+uid()).replace(/-/g,'').slice(0,10);
+  localStorage.setItem(SYNC_CODE_KEY, code); $('#syncCode').value=code;
+  attachSync(true); toast('Code created. Enter it on your other device.');
+};
+$('#syncJoin').onclick = async ()=>{
+  if(!fbDb){ toast('Connect the database first (step 1)'); return; }
+  const code=$('#syncCode').value.trim(); if(!code){ toast('Type the code from your other device'); return; }
+  localStorage.setItem(SYNC_CODE_KEY, code);
+  attachSync(true); toast('Linked. Pulling your crates…');
+};
+$('#syncCopy').onclick=()=>{ const v=$('#syncCode').value; if(!v) return toast('No code yet'); navigator.clipboard.writeText(v).then(()=>toast('Code copied')).catch(()=>{ $('#syncCode').select(); toast('Select and copy it'); }); };
 
 /* =========================================================
    NAV + SHEETS
@@ -1352,6 +1578,7 @@ $('#overlay').addEventListener('click',e=>{ if(e.target.id==='overlay' || e.targ
 /* boot */
 renderMoods();
 renderCrates();
+initFirebase().then(ok=>{ if(ok && getSyncCode()) attachSync(false); });
 </script>
 </body>
 </html>
